@@ -52,6 +52,18 @@ public sealed class ExceptionHandlingMiddleware(
                 "Locked Out",
                 lockedOut.Message,
                 null),
+            PaymentProviderUnavailableException provider => (
+                StatusCodes.Status502BadGateway,
+                provider.Code,
+                "Payment Provider Unavailable",
+                provider.Message,
+                null),
+            UnprocessableEntityException unprocessable => (
+                StatusCodes.Status422UnprocessableEntity,
+                unprocessable.Code,
+                "Unprocessable Entity",
+                unprocessable.Message,
+                null),
             NotFoundException notFound => (
                 StatusCodes.Status404NotFound,
                 notFound.Code,
@@ -110,6 +122,19 @@ public sealed class ExceptionHandlingMiddleware(
         if (errors is not null)
         {
             problem["errors"] = errors;
+        }
+
+        if (exception is PaymentProviderUnavailableException providerError)
+        {
+            if (providerError.OrderNumber is not null)
+            {
+                problem["orderNumber"] = providerError.OrderNumber;
+            }
+
+            if (providerError.OrderToken is not null)
+            {
+                problem["orderToken"] = providerError.OrderToken;
+            }
         }
 
         await context.Response.WriteAsync(JsonSerializer.Serialize(problem, JsonOptions));

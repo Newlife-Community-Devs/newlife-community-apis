@@ -3,8 +3,12 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Newlife.Application.Common.Interfaces;
+using Newlife.Application.Orders;
 using Newlife.Domain.Entities;
+using Newlife.Infrastructure.Email;
+using Newlife.Infrastructure.HostedServices;
 using Newlife.Infrastructure.Identity;
+using Newlife.Infrastructure.Payments;
 using Newlife.Infrastructure.Persistence;
 using Newlife.Infrastructure.Sermons;
 using Newlife.Infrastructure.Storage;
@@ -68,6 +72,25 @@ public static class DependencyInjection
         {
             services.AddHostedService<RssSyncHostedService>();
         }
+
+        services.Configure<HubtelOptions>(configuration.GetSection(HubtelOptions.SectionName));
+        services.Configure<PaymentsTuningOptions>(configuration.GetSection(PaymentsTuningOptions.SectionName));
+
+        services.AddHttpClient<IPaymentGateway, HubtelClient>(client =>
+            client.Timeout = TimeSpan.FromSeconds(30));
+
+        if (string.Equals(configuration["Email:Provider"], "Smtp", StringComparison.OrdinalIgnoreCase))
+        {
+            services.AddSingleton<IEmailSender, SmtpEmailSender>();
+        }
+        else
+        {
+            services.AddSingleton<IEmailSender, NullEmailSender>();
+        }
+
+        services.AddHostedService<PaymentFulfillmentHostedService>();
+        services.AddHostedService<PaymentReconciliationHostedService>();
+        services.AddHostedService<OrderExpiryHostedService>();
 
         return services;
     }

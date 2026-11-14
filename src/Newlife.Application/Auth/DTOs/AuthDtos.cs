@@ -10,7 +10,8 @@ public sealed record UserResponse(
     Guid Id,
     string Email,
     string FullName,
-    IReadOnlyList<string> Roles);
+    IReadOnlyList<string> Roles,
+    bool IsLockedOut);
 
 public sealed record AuthTokensResponse(
     string AccessToken,

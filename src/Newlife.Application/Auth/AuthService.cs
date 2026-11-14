@@ -172,5 +172,6 @@ public sealed class AuthService(
     }
 
     private static UserResponse ToUserResponse(AdminUser user, IEnumerable<string> roles)
-        => new(user.Id, user.Email ?? string.Empty, user.FullName, roles.ToArray());
+        => new(user.Id, user.Email ?? string.Empty, user.FullName, roles.ToArray(),
+            user.LockoutEnd > DateTime.UtcNow);
 }

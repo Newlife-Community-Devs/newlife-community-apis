@@ -14,4 +14,12 @@ public static class ClaimsPrincipalExtensions
             ? userId
             : throw new UnauthorizedException("auth.invalid_token", "Invalid access token.");
     }
+
+    public static Guid? GetUserIdOrNull(this ClaimsPrincipal principal)
+    {
+        var value = principal.FindFirst("sub")?.Value
+                    ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+        return Guid.TryParse(value, out var userId) ? userId : null;
+    }
 }

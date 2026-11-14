@@ -23,6 +23,22 @@ using Serilog.Formatting.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
+if (builder.Environment.IsProduction())
+{
+    var hubtelSection = builder.Configuration.GetSection("Hubtel");
+
+    if (!hubtelSection.GetValue("EnforceCallbackIp", true))
+    {
+        throw new InvalidOperationException(
+            "Hubtel:EnforceCallbackIp must be true in Production unless disabling it is an explicit, logged decision.");
+    }
+
+    if (string.IsNullOrWhiteSpace(hubtelSection["CallbackToken"]))
+    {
+        throw new InvalidOperationException("Hubtel:CallbackToken is required in Production.");
+    }
+}
+
 builder.Host.UseSerilog((context, services, configuration) => configuration
     .ReadFrom.Configuration(context.Configuration)
     .ReadFrom.Services(services)
