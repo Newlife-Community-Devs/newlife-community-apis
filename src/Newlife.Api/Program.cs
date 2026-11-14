@@ -1,4 +1,25 @@
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.IdentityModel.Tokens;
+using Newlife.Api.Filters;
+using Newlife.Api.Logging;
+using Newlife.Api.Middleware;
+using Newlife.Api.OpenApi;
+using Newlife.Application;
+using Newlife.Infrastructure;
+using Newlife.Infrastructure.Persistence;
+using Newlife.Infrastructure.Persistence.Seed;
 using Serilog;
+using Serilog.Formatting.Display;
+using Serilog.Formatting.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -6,25 +27,193 @@ builder.Host.UseSerilog((context, services, configuration) => configuration
     .ReadFrom.Configuration(context.Configuration)
     .ReadFrom.Services(services)
     .Enrich.FromLogContext()
-    .WriteTo.Console());
+    .Enrich.With<RedactSecretsEnricher>()
+    .WriteTo.Console(context.HostingEnvironment.IsDevelopment()
+        ? new MessageTemplateTextFormatter("[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+        : new JsonFormatter()));
 
-builder.Services.AddControllers();
-builder.Services.AddOpenApi();
-builder.Services.AddHealthChecks();
+var reverseProxyEnabled = builder.Configuration.GetValue<bool>("ReverseProxy:Enabled");
+if (reverseProxyEnabled)
+{
+    builder.Services.Configure<ForwardedHeadersOptions>(options =>
+    {
+        options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+        options.ForwardLimit = 1;
+        options.KnownIPNetworks.Clear();
+        options.KnownProxies.Clear();
+    });
+}
+
+builder.Services.AddApplication();
+builder.Services.AddInfrastructure(builder.Configuration);
+
+var jwtSection = builder.Configuration.GetSection("Jwt");
+var jwtSigningKey = jwtSection["SigningKey"] ?? string.Empty;
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.MapInboundClaims = false;
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwtSection["Issuer"],
+            ValidateAudience = true,
+            ValidAudience = jwtSection["Audience"],
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSigningKey)),
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromSeconds(30),
+            NameClaimType = "name",
+            RoleClaimType = "role"
+        };
+    });
+builder.Services.AddAuthorization();
+
+builder.Services
+    .AddControllers(options => options.Filters.Add<ValidationFilter>())
+    .AddJsonOptions(options =>
+        options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+
+builder.Services.AddProblemDetails(options =>
+    options.CustomizeProblemDetails = context =>
+        context.ProblemDetails.Extensions["traceId"] =
+            System.Diagnostics.Activity.Current?.Id ?? context.HttpContext.TraceIdentifier);
+
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
+var allowVercelPreviews = builder.Configuration.GetValue<bool>("Cors:AllowVercelPreviews");
+builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy
+    .SetIsOriginAllowed(origin => IsAllowedOrigin(origin, allowedOrigins, allowVercelPreviews))
+    .AllowAnyHeader()
+    .AllowAnyMethod()));
+
+var rateLimitingEnabled = builder.Configuration.GetValue("RateLimits:Enabled", true);
+if (rateLimitingEnabled)
+{
+    builder.Services.AddRateLimiter(options =>
+    {
+        options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+        options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+            RateLimitPartition.GetFixedWindowLimiter(ClientKey(context), _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 120,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+
+        AddIpPolicy(options, "auth", permitLimit: 5, window: TimeSpan.FromMinutes(1));
+        AddIpPolicy(options, "prayer-submit", permitLimit: 5, window: TimeSpan.FromMinutes(10));
+        AddIpPolicy(options, "orders", permitLimit: 10, window: TimeSpan.FromMinutes(1));
+        AddIpPolicy(options, "ping", permitLimit: 3, window: TimeSpan.FromMinutes(1));
+    });
+}
+
+builder.Services.AddOpenApi("v1", options =>
+    options.AddDocumentTransformer<BearerSecuritySchemeTransformer>());
+
+var connectionString = builder.Configuration.GetConnectionString("Default") ?? string.Empty;
+builder.Services.AddHealthChecks().AddNpgSql(connectionString, name: "database");
 
 var app = builder.Build();
 
+if (reverseProxyEnabled)
+{
+    app.UseForwardedHeaders();
+}
+
+app.UseMiddleware<ExceptionHandlingMiddleware>();
+app.UseStatusCodePages();
 app.UseSerilogRequestLogging();
+app.UseCors();
+app.UseRouting();
+if (rateLimitingEnabled)
+{
+    app.UseRateLimiter();
+}
+app.UseAuthentication();
+app.UseAuthorization();
 
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint("/openapi/v1.json", "Newlife API v1");
+        options.RoutePrefix = "swagger";
+    });
 }
 
-app.UseAuthorization();
 app.MapControllers();
-app.MapHealthChecks("/health");
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    Predicate = _ => false,
+    ResponseWriter = WriteHealthResponse
+});
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    ResponseWriter = WriteHealthResponse
+});
+
+try
+{
+    using var scope = app.Services.CreateScope();
+    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    if (app.Configuration.GetValue<bool>("Database:RunMigrationsOnStartup"))
+    {
+        await dbContext.Database.MigrateAsync();
+    }
+
+    await DbSeeder.SeedAsync(scope.ServiceProvider, app.Configuration);
+}
+catch (Exception exception) when (app.Environment.IsDevelopment())
+{
+    app.Logger.LogWarning(exception, "Database initialization skipped because the database is unavailable.");
+}
 
 app.Run();
+
+static string ClientKey(HttpContext context)
+    => context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+static void AddIpPolicy(RateLimiterOptions options, string name, int permitLimit, TimeSpan window)
+    => options.AddPolicy(name, context =>
+        RateLimitPartition.GetFixedWindowLimiter(ClientKey(context), _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = permitLimit,
+            Window = window,
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
+
+static bool IsAllowedOrigin(string origin, string[] allowedOrigins, bool allowVercelPreviews)
+{
+    if (allowedOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase))
+    {
+        return true;
+    }
+
+    return allowVercelPreviews &&
+           Uri.TryCreate(origin, UriKind.Absolute, out var uri) &&
+           uri.Scheme == Uri.UriSchemeHttps &&
+           (uri.Host.Equals("vercel.app", StringComparison.OrdinalIgnoreCase) ||
+            uri.Host.EndsWith(".vercel.app", StringComparison.OrdinalIgnoreCase));
+}
+
+static Task WriteHealthResponse(HttpContext context, HealthReport report)
+{
+    context.Response.ContentType = "application/json";
+
+    var payload = new
+    {
+        status = report.Status == HealthStatus.Healthy ? "healthy" : "unhealthy",
+        checks = report.Entries.ToDictionary(
+            entry => entry.Key,
+            entry => entry.Value.Status.ToString().ToLowerInvariant())
+    };
+
+    return context.Response.WriteAsync(JsonSerializer.Serialize(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+}
 
 public partial class Program { }
