@@ -28,7 +28,7 @@ public class ApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("Seed:AdminPassword", "AdminPass123");
         builder.UseSetting("Seed:AdminFullName", "Test Administrator");
         builder.UseSetting("Hubtel:ApiId", "");
-        builder.UseSetting("Seed:DemoData", "false");
+        builder.UseSetting("Seed:DemoData", "true");
         builder.UseSetting("ReverseProxy:Enabled", "false");
     }
 

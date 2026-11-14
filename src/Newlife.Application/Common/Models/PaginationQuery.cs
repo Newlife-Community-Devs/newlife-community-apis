@@ -1,6 +1,6 @@
 namespace Newlife.Application.Common.Models;
 
-public sealed class PaginationQuery
+public class PaginationQuery
 {
     private int _page = 1;
     private int _pageSize = 20;
