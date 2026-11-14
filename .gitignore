@@ -1,0 +1,43 @@
+## .NET build artifacts
+bin/
+obj/
+artifacts/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## IDE
+.vs/
+.idea/
+.vscode/
+*.swp
+*~
+
+## Test results
+TestResults/
+coverage*.xml
+coverage*.json
+*.trx
+
+## Local configuration and secrets
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+appsettings.*.Local.json
+*.pfx
+*.pem
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Logs
+logs/
+*.log
+
+## EF Core
+*.db
+*.db-shm
+*.db-wal
