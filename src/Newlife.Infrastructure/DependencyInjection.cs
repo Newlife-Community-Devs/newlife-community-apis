@@ -6,6 +6,7 @@ using Newlife.Application.Common.Interfaces;
 using Newlife.Domain.Entities;
 using Newlife.Infrastructure.Identity;
 using Newlife.Infrastructure.Persistence;
+using Newlife.Infrastructure.Sermons;
 using Newlife.Infrastructure.Storage;
 
 namespace Newlife.Infrastructure;
@@ -58,6 +59,14 @@ public static class DependencyInjection
         else
         {
             services.AddSingleton<IStorageProvider, LocalStorageProvider>();
+        }
+
+        services.AddHttpClient<IPodcastFeedClient, PodcastFeedClient>(client =>
+            client.Timeout = TimeSpan.FromSeconds(30));
+
+        if (configuration.GetValue("Sermons:SyncEnabled", true))
+        {
+            services.AddHostedService<RssSyncHostedService>();
         }
 
         return services;

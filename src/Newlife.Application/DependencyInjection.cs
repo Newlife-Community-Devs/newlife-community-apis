@@ -5,6 +5,7 @@ using Newlife.Application.Auth;
 using Newlife.Application.Events;
 using Newlife.Application.Media;
 using Newlife.Application.Prayers;
+using Newlife.Application.Sermons;
 using Newlife.Application.Settings;
 using Newlife.Application.Users;
 
@@ -22,6 +23,7 @@ public static class DependencyInjection
         services.AddScoped<EventService>();
         services.AddScoped<AnnouncementService>();
         services.AddScoped<SettingsService>();
+        services.AddScoped<SermonService>();
         return services;
     }
 }

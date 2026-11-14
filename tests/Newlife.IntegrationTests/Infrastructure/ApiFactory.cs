@@ -23,6 +23,8 @@ public class ApiFactory : WebApplicationFactory<Program>
 
     public FakeStorageProvider Storage { get; } = new();
 
+    public FakePodcastFeedClient Feed { get; } = new();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Development");
@@ -34,12 +36,15 @@ public class ApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("Seed:AdminFullName", "Test Administrator");
         builder.UseSetting("Hubtel:ApiId", "");
         builder.UseSetting("Seed:DemoData", "true");
+        builder.UseSetting("Sermons:SyncEnabled", "false");
         builder.UseSetting("ReverseProxy:Enabled", "false");
 
         builder.ConfigureTestServices(services =>
         {
             services.RemoveAll<IStorageProvider>();
             services.AddSingleton<IStorageProvider>(Storage);
+            services.RemoveAll<IPodcastFeedClient>();
+            services.AddSingleton<IPodcastFeedClient>(Feed);
         });
     }
 
