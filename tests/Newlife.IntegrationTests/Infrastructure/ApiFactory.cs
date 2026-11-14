@@ -1,6 +1,9 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Extensions.Configuration;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Newlife.Application.Common.Interfaces;
 using Testcontainers.PostgreSql;
 
 namespace Newlife.IntegrationTests.Infrastructure;
@@ -18,6 +21,8 @@ public class ApiFactory : WebApplicationFactory<Program>
         _database.StartAsync().GetAwaiter().GetResult();
     }
 
+    public FakeStorageProvider Storage { get; } = new();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Development");
@@ -30,6 +35,12 @@ public class ApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("Hubtel:ApiId", "");
         builder.UseSetting("Seed:DemoData", "true");
         builder.UseSetting("ReverseProxy:Enabled", "false");
+
+        builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<IStorageProvider>();
+            services.AddSingleton<IStorageProvider>(Storage);
+        });
     }
 
     public override async ValueTask DisposeAsync()

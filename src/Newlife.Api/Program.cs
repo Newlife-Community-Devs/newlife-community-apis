@@ -128,6 +128,7 @@ app.UseStatusCodePages();
 app.UseSerilogRequestLogging();
 app.UseCors();
 app.UseRouting();
+app.UseStaticFiles();
 if (rateLimitingEnabled)
 {
     app.UseRateLimiter();

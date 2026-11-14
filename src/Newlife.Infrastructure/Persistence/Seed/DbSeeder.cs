@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Newlife.Domain.Constants;
 using Newlife.Domain.Entities;
+using Newlife.Infrastructure.Persistence;
 
 namespace Newlife.Infrastructure.Persistence.Seed;
 
@@ -14,6 +15,7 @@ public static class DbSeeder
     {
         var roleManager = services.GetRequiredService<RoleManager<IdentityRole<Guid>>>();
         var userManager = services.GetRequiredService<UserManager<AdminUser>>();
+        var db = services.GetRequiredService<AppDbContext>();
         var logger = services.GetRequiredService<ILoggerFactory>().CreateLogger("DbSeeder");
 
         foreach (var role in Roles.All)
@@ -30,10 +32,12 @@ public static class DbSeeder
         }
 
         await SeedFirstAdminAsync(userManager, configuration, logger);
+        await SeedSettingsAsync(db, configuration);
 
         if (configuration.GetValue<bool>("Seed:DemoData"))
         {
-            await SeedDemoPrayersAsync(services, logger);
+            await SeedDemoPrayersAsync(db, logger);
+            await SeedDemoCmsAsync(db, logger);
         }
     }
 
@@ -76,9 +80,28 @@ public static class DbSeeder
         }
     }
 
-    private static async Task SeedDemoPrayersAsync(IServiceProvider services, ILogger logger)
+    private static async Task SeedSettingsAsync(AppDbContext db, IConfiguration configuration)
     {
-        var db = services.GetRequiredService<AppDbContext>();
+        await InsertSettingIfMissingAsync(
+            db, "sermons.latestYoutubeUrl", configuration["SEED_YOUTUBE_URL"] ?? string.Empty, "sermons");
+        await InsertSettingIfMissingAsync(db, "home.heroAnnouncement", string.Empty, "home");
+        await db.SaveChangesAsync();
+    }
+
+    private static async Task InsertSettingIfMissingAsync(
+        AppDbContext db,
+        string key,
+        string value,
+        string group)
+    {
+        if (!await db.Set<SiteSetting>().AnyAsync(setting => setting.Key == key))
+        {
+            db.Set<SiteSetting>().Add(new SiteSetting { Key = key, Value = value, Group = group });
+        }
+    }
+
+    private static async Task SeedDemoPrayersAsync(AppDbContext db, ILogger logger)
+    {
         if (await db.Set<PrayerRequest>().AnyAsync())
         {
             return;
@@ -111,5 +134,88 @@ public static class DbSeeder
 
         await db.SaveChangesAsync();
         logger.LogInformation("Seeded demo prayer requests.");
+    }
+
+    private static async Task SeedDemoCmsAsync(AppDbContext db, ILogger logger)
+    {
+        var now = DateTime.UtcNow;
+
+        if (!await db.Set<Event>().AnyAsync())
+        {
+            var camp = new Event
+            {
+                Slug = "youth-camp-2026",
+                Title = "Youth Camp 2026",
+                Description = "Three days of worship, teaching and fellowship.",
+                Venue = "Kpone-Katamanso",
+                StartAt = now.AddDays(14),
+                EndAt = now.AddDays(16),
+                IsPublished = true,
+                IsFeatured = true,
+                TicketingEnabled = true
+            };
+
+            var vigil = new Event
+            {
+                Slug = "all-night-vigil",
+                Title = "All-Night Vigil",
+                Description = "A night of prayer and praise.",
+                Venue = "Church Auditorium",
+                StartAt = now.AddDays(30),
+                EndAt = now.AddDays(31),
+                IsPublished = false,
+                IsFeatured = false,
+                TicketingEnabled = false
+            };
+
+            db.AddRange(
+                camp,
+                vigil,
+                new TicketType
+                {
+                    EventId = camp.Id,
+                    Name = "Regular",
+                    Price = 50m,
+                    Quantity = 100,
+                    MaxPerOrder = 10,
+                    IsActive = true
+                },
+                new TicketType
+                {
+                    EventId = camp.Id,
+                    Name = "VIP",
+                    Price = 100m,
+                    Quantity = 20,
+                    MaxPerOrder = 4,
+                    IsActive = true
+                });
+
+            await db.SaveChangesAsync();
+            logger.LogInformation("Seeded demo events.");
+        }
+
+        if (!await db.Set<Announcement>().AnyAsync())
+        {
+            db.AddRange(
+                new Announcement
+                {
+                    Title = "Sunday service times updated",
+                    Body = "All services now start at 7:30am.",
+                    IsPinned = true,
+                    IsPublished = true,
+                    PublishAt = now.AddDays(-1)
+                },
+                new Announcement
+                {
+                    Title = "Harvest thanksgiving",
+                    Body = "Join us for harvest thanksgiving on the last Sunday of the month.",
+                    IsPinned = false,
+                    IsPublished = true,
+                    PublishAt = now.AddDays(-7)
+                });
+
+            await db.SaveChangesAsync();
+            logger.LogInformation("Seeded demo announcements.");
+        }
     }
 }

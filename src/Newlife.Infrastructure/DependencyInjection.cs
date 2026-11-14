@@ -6,6 +6,7 @@ using Newlife.Application.Common.Interfaces;
 using Newlife.Domain.Entities;
 using Newlife.Infrastructure.Identity;
 using Newlife.Infrastructure.Persistence;
+using Newlife.Infrastructure.Storage;
 
 namespace Newlife.Infrastructure;
 
@@ -46,6 +47,18 @@ public static class DependencyInjection
         services.AddHttpContextAccessor();
         services.AddScoped<ICurrentUser, CurrentUser>();
         services.AddScoped<IJwtTokenService, JwtTokenService>();
+
+        var storageOptions = configuration.BindStorageOptions();
+        services.Configure<StorageOptions>(configuration.GetSection(StorageOptions.SectionName));
+
+        if (string.Equals(storageOptions.Provider, "R2", StringComparison.OrdinalIgnoreCase))
+        {
+            services.AddSingleton<IStorageProvider, R2StorageProvider>();
+        }
+        else
+        {
+            services.AddSingleton<IStorageProvider, LocalStorageProvider>();
+        }
 
         return services;
     }
