@@ -16,7 +16,7 @@ public sealed partial class RedactSecretsEnricher : ILogEventEnricher
         }
 
         var redacted = TokenPattern().Replace(path, "$1***");
-        logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty("RequestPath", redacted));
+        logEvent.AddOrUpdateProperty(propertyFactory.CreateProperty("RequestPath", redacted));
     }
 
     [GeneratedRegex(@"(?i)(token=)[^&]*")]

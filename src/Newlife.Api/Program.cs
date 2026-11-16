@@ -139,6 +139,12 @@ if (reverseProxyEnabled)
     app.UseForwardedHeaders();
 }
 
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();
+    app.UseHttpsRedirection();
+}
+
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 app.UseStatusCodePages();
 app.UseSerilogRequestLogging();
