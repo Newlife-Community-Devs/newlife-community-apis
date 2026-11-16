@@ -12,7 +12,5 @@ public interface IAppDbContext
         IsolationLevel isolationLevel,
         CancellationToken cancellationToken = default);
 
-    bool IsSerializationConflict(Exception exception);
-
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

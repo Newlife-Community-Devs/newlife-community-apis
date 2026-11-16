@@ -17,6 +17,7 @@ public sealed class TicketTypeConfiguration : IEntityTypeConfiguration<TicketTyp
         builder.Property(ticketType => ticketType.Description).HasColumnName("description").HasMaxLength(500);
         builder.Property(ticketType => ticketType.Price).HasColumnName("price").HasPrecision(12, 2);
         builder.Property(ticketType => ticketType.Quantity).HasColumnName("quantity");
+        builder.Property(ticketType => ticketType.StockReserved).HasColumnName("stock_reserved");
         builder.Property(ticketType => ticketType.MaxPerOrder).HasColumnName("max_per_order");
         builder.Property(ticketType => ticketType.SalesStartAt).HasColumnName("sales_start_at");
         builder.Property(ticketType => ticketType.SalesEndAt).HasColumnName("sales_end_at");

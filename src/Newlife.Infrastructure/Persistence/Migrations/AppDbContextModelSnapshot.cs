@@ -1040,6 +1040,10 @@ namespace Newlife.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("sales_start_at");
 
+                    b.Property<int>("StockReserved")
+                        .HasColumnType("integer")
+                        .HasColumnName("stock_reserved");
+
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");

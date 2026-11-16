@@ -32,6 +32,7 @@ public static class DependencyInjection
         services.AddScoped<AdminOrderService>();
         services.AddScoped<CheckInService>();
         services.AddScoped<TicketQrService>();
+        services.AddScoped<TicketAvailability>();
         return services;
     }
 }

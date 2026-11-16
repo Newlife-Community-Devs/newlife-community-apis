@@ -22,6 +22,7 @@ public sealed class OrderFulfillmentService(
     IAppDbContext db,
     IPaymentGateway gateway,
     IEmailSender emailSender,
+    TicketAvailability ticketAvailability,
     IConfiguration configuration,
     ILogger<OrderFulfillmentService> logger)
 {
@@ -237,6 +238,8 @@ public sealed class OrderFulfillmentService(
                 .SetProperty(ticket => ticket.Status, TicketStatus.Cancelled)
                 .SetProperty(ticket => ticket.UpdatedAt, now),
                 cancellationToken);
+
+        await ticketAvailability.ReleaseStockAsync(order.Id, cancellationToken);
 
         return FulfilOutcome.AlreadyProcessed;
     }

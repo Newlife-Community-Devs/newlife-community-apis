@@ -14,6 +14,8 @@ public sealed class TicketType : BaseEntity
 
     public int Quantity { get; set; }
 
+    public int StockReserved { get; set; }
+
     public int MaxPerOrder { get; set; } = 10;
 
     public DateTime? SalesStartAt { get; set; }

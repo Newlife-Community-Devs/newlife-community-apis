@@ -24,7 +24,9 @@ public sealed class OrdersLifecycleTests(NoRateLimitApiFactory factory) : IClass
         order.CheckoutUrl.ShouldNotBeNull();
         order.Items.ShouldHaveSingleItem().Quantity.ShouldBe(2);
 
-        var request = factory.Gateway.CreatedRequests[before];
+        var suffix = order.OrderNumber.Replace("NL-", string.Empty);
+        var request = factory.Gateway.CreatedRequests
+            .Single(item => item.ClientReference.StartsWith("NL" + suffix, StringComparison.Ordinal));
         request.ClientReference.ShouldMatch("^[A-Z0-9]+$");
         request.ClientReference.Length.ShouldBeLessThanOrEqualTo(32);
         request.Amount.ShouldBe(100.00m);
@@ -213,6 +215,55 @@ public sealed class OrdersLifecycleTests(NoRateLimitApiFactory factory) : IClass
         recovery.StatusCode.ShouldBe(HttpStatusCode.Created);
     }
 
+    [Fact]
+    public async Task Concurrent_creates_never_exceed_capacity()
+    {
+        var admin = await AdminClientAsync();
+        var (eventId, slug, ticketTypeId) = await OrderTestHelpers.CreateTicketedEventAsync(
+            admin, quantity: 100, maxPerOrder: 5);
+
+        var before = factory.Gateway.CreatedRequests.Count;
+
+        var tasks = Enumerable.Range(0, 40)
+            .Select(_ => Task.Run(async () =>
+            {
+                var requestClient = factory.CreateClient();
+                return await requestClient.PostAsJsonAsync("/api/v1/orders", new
+                {
+                    eventId,
+                    buyerFullName = "Concurrent Buyer",
+                    buyerEmail = "buyer@example.com",
+                    buyerPhone = "233244000000",
+                    items = new[] { new { ticketTypeId, quantity = 5 } }
+                });
+            }))
+            .ToArray();
+
+        var responses = await Task.WhenAll(tasks);
+
+        var successes = responses.Count(response => response.StatusCode == HttpStatusCode.Created);
+        var conflicts = responses.Count(response => response.StatusCode == HttpStatusCode.Conflict);
+
+        (successes + conflicts).ShouldBe(40);
+        successes.ShouldBeLessThanOrEqualTo(20);
+        successes.ShouldBe(20);
+
+        var adminOrders = await admin.GetFromJsonAsync<AdminOrderPage>($"/api/v1/admin/orders?eventId={eventId}&pageSize=100");
+        adminOrders.ShouldNotBeNull();
+
+        adminOrders.Items
+            .Count(item => item.Status is "PendingPayment" or "AwaitingPayment" or "Paid")
+            .ShouldBe(successes);
+
+        var checkoutCalls = factory.Gateway.CreatedRequests.Count - before;
+        checkoutCalls.ShouldBe(successes);
+
+        var types = await factory.CreateClient()
+            .GetFromJsonAsync<RemainingRow[]>($"/api/v1/events/{slug}/ticket-types");
+        types.ShouldNotBeNull();
+        types.ShouldHaveSingleItem().Remaining.ShouldBe(0);
+    }
+
     private async Task<HttpClient> AdminClientAsync()
     {
         var client = factory.CreateClient();
@@ -230,4 +281,10 @@ public sealed class OrdersLifecycleTests(NoRateLimitApiFactory factory) : IClass
         DateTime? PaidAt,
         DateTime? RefundedAt,
         string? PaymentMethod);
+
+    private sealed record RemainingRow(int Remaining);
+
+    private sealed record AdminOrderRow(string OrderNumber, string Status);
+
+    private sealed record AdminOrderPage(AdminOrderRow[] Items, int Page, int PageSize, int TotalCount);
 }

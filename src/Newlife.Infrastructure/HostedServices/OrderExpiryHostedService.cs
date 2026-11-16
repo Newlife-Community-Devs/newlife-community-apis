@@ -13,6 +13,7 @@ public sealed class OrderExpiryHostedService(
     IServiceScopeFactory scopeFactory,
     IOptions<PaymentsTuningOptions> tuning,
     ILogger<OrderExpiryHostedService> logger) : BackgroundService
+
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -49,16 +50,30 @@ public sealed class OrderExpiryHostedService(
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var fulfillment = scope.ServiceProvider.GetRequiredService<OrderFulfillmentService>();
+        var availability = scope.ServiceProvider.GetRequiredService<TicketAvailability>();
         var now = DateTime.UtcNow;
 
-        await db.Set<Domain.Entities.Order>()
+        var pendingExpired = await db.Set<Domain.Entities.Order>()
             .Where(order => order.Status == OrderStatus.PendingPayment &&
                             order.HoldExpiresAt != null && order.HoldExpiresAt < now)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(order => order.Status, OrderStatus.Cancelled)
-                .SetProperty(order => order.HoldExpiresAt, (DateTime?)null)
-                .SetProperty(order => order.UpdatedAt, now),
-                cancellationToken);
+            .Select(order => order.Id)
+            .ToListAsync(cancellationToken);
+
+        foreach (var orderId in pendingExpired)
+        {
+            var rows = await db.Set<Domain.Entities.Order>()
+                .Where(order => order.Id == orderId && order.Status == OrderStatus.PendingPayment)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(order => order.Status, OrderStatus.Cancelled)
+                    .SetProperty(order => order.HoldExpiresAt, (DateTime?)null)
+                    .SetProperty(order => order.UpdatedAt, now),
+                    cancellationToken);
+
+            if (rows > 0)
+            {
+                await availability.ReleaseStockAsync(orderId, cancellationToken);
+            }
+        }
 
         var awaiting = await db.Set<Domain.Entities.Order>()
             .Where(order => order.Status == OrderStatus.AwaitingPayment &&
@@ -82,6 +97,7 @@ public sealed class OrderExpiryHostedService(
 
                 if (rows > 0)
                 {
+                    await availability.ReleaseStockAsync(orderId, cancellationToken);
                     logger.LogInformation("Expired hold on order {OrderId} after status was {Outcome}", orderId, outcome);
                 }
             }

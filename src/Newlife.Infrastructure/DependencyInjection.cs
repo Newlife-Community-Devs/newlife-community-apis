@@ -24,7 +24,13 @@ public static class DependencyInjection
         var connectionString = configuration.GetConnectionString("Default")
             ?? throw new InvalidOperationException("ConnectionStrings:Default is not configured.");
 
-        services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
+        // Npgsql enables a retrying execution strategy by default; it wraps every exception
+        // (including business errors and serializable 40001) in InvalidOperationException.
+        // Order creation owns its own serializable retry loop (PLAN §5.2), so opt out.
+        services.AddDbContext<AppDbContext>(options => options.UseNpgsql(
+            connectionString,
+            npgsql => npgsql.ExecutionStrategy(dependencies =>
+                new Microsoft.EntityFrameworkCore.Storage.NonRetryingExecutionStrategy(dependencies))));
         services.AddScoped<IAppDbContext>(provider => provider.GetRequiredService<AppDbContext>());
 
         services.AddOptions<JwtOptions>()

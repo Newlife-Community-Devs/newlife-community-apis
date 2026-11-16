@@ -5,11 +5,12 @@ using Newlife.Application.Common.Exceptions;
 using Newlife.Application.Common.Interfaces;
 using Newlife.Application.Common.Models;
 using Newlife.Application.Events.DTOs;
+using Newlife.Application.Orders;
 using Newlife.Domain.Entities;
 
 namespace Newlife.Application.Events;
 
-public sealed class EventService(IAppDbContext db)
+public sealed class EventService(IAppDbContext db, TicketAvailability ticketAvailability)
 {
     public async Task<PagedResult<PublicEventResponse>> ListPublicAsync(
         EventPublicQuery query,
@@ -64,17 +65,23 @@ public sealed class EventService(IAppDbContext db)
             .OrderBy(type => type.Name)
             .ToListAsync(cancellationToken);
 
-        return types.Select(type => new PublicTicketTypeResponse(
-            type.Id,
-            type.Name,
-            type.Description,
-            type.Price,
-            "GHS",
-            type.Quantity,
-            type.MaxPerOrder,
-            type.SalesStartAt,
-            type.SalesEndAt,
-            IsOnSale(type, now, soldCount: 0))).ToArray();
+        var consumedMap = await ticketAvailability.GetConsumedMapAsync(types, cancellationToken);
+
+        return types.Select(type =>
+        {
+            var remaining = type.Quantity - consumedMap[type.Id];
+            return new PublicTicketTypeResponse(
+                type.Id,
+                type.Name,
+                type.Description,
+                type.Price,
+                "GHS",
+                remaining,
+                type.MaxPerOrder,
+                type.SalesStartAt,
+                type.SalesEndAt,
+                IsOnSale(type, now, soldCount: type.Quantity - remaining));
+        }).ToArray();
     }
 
     public async Task<PagedResult<AdminEventResponse>> ListAdminAsync(

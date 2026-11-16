@@ -72,3 +72,21 @@ PLAN §17 expects separate milestone commits. M1 (foundation) and M2 (auth) both
 `Program.cs`, `AppDbContext` and DI; splitting them would leave the first commit not
 compiling on its own, breaking bisectability. One commit per remaining milestone (M3+) is
 kept, each with a green build and passing tests.
+
+## D-008 — Atomic stock counter instead of Serializable retry
+
+PLAN §5.2 prescribes order creation in a **Serializable** transaction with up to 3 retries
+on `40001`. Under 40-way concurrent load in integration tests, EF Core 10 + Npgsql 10 showed
+ambiguous commit behavior: a serialization error could surface for a request whose order had
+actually committed (the row persisted while the client saw `40001`), leaving orphaned
+`PendingPayment` orders and double-commits on retry. `CommitAsync`-failure recovery cannot
+close that window without an idempotency key.
+
+Decision: `ticket_types.stock_reserved` is a monotonic counter maintained by atomic
+conditional updates (`UPDATE ... WHERE stock_reserved + q <= quantity`); a zero-row result is
+`409 order.capacity_exceeded`. No Serializable isolation, no retries, deterministic under any
+concurrency. The release rule from §5.2 (Cancelled/Expired/Refunded/RefundFailed release
+stock) is enforced by explicit decrements in the expiry job, refund callbacks and refund
+status handling. `RefundPending` keeps its reservation until the refund callback resolves it.
+Npgsql's default retrying execution strategy is replaced with `NonRetryingExecutionStrategy`
+(it wrapped every exception, including business errors, in `InvalidOperationException`).

@@ -1,12 +1,13 @@
+using System.Collections.Concurrent;
 using Newlife.Application.Common.Interfaces;
 
 namespace Newlife.IntegrationTests.Infrastructure;
 
 public sealed class FakePaymentGateway : IPaymentGateway
 {
-    public List<CheckoutRequest> CreatedRequests { get; } = [];
-    public List<string> StatusLookups { get; } = [];
-    public List<string> RefundedTransactions { get; } = [];
+    public ConcurrentBag<CheckoutRequest> CreatedRequests { get; } = [];
+    public ConcurrentBag<string> StatusLookups { get; } = [];
+    public ConcurrentBag<string> RefundedTransactions { get; } = [];
 
     public bool FailCreate { get; set; }
     public bool StatusUnreachable { get; set; }

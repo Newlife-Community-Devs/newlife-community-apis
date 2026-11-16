@@ -20,6 +20,7 @@ public enum CallbackResult
 public sealed class HubtelCallbackService(
     IAppDbContext db,
     FulfillmentQueue fulfillmentQueue,
+    TicketAvailability ticketAvailability,
     IOptions<HubtelOptions> options,
     ILogger<HubtelCallbackService> logger)
 {
@@ -155,6 +156,8 @@ public sealed class HubtelCallbackService(
                     .SetProperty(ticket => ticket.UpdatedAt, now),
                     cancellationToken);
 
+            await ticketAvailability.ReleaseStockAsync(order.Id, cancellationToken);
+
             log.ProcessingResult = "refunded";
             logger.LogInformation("Refund confirmed for order {OrderNumber}", order.OrderNumber);
         }
@@ -166,6 +169,8 @@ public sealed class HubtelCallbackService(
                     .SetProperty(item => item.Status, OrderStatus.RefundFailed)
                     .SetProperty(item => item.UpdatedAt, now),
                     cancellationToken);
+
+            await ticketAvailability.ReleaseStockAsync(order.Id, cancellationToken);
 
             log.ProcessingResult = "refund_failed";
             logger.LogWarning("Refund failed for order {OrderNumber} (code {ResponseCode})", order.OrderNumber, responseCode);

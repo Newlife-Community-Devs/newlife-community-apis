@@ -14,29 +14,133 @@ namespace Newlife.Application.Orders;
 public sealed class OrderService(
     IAppDbContext db,
     IPaymentGateway gateway,
+    TicketAvailability ticketAvailability,
     IOptions<HubtelOptions> hubtelOptions,
     IConfiguration configuration,
     ILogger<OrderService> logger)
 {
-    private const int MaxRetries = 3;
-
     public async Task<OrderCreatedResponse> CreateAsync(
         CreateOrderRequest request,
         CancellationToken cancellationToken)
     {
-        for (var attempt = 1; attempt <= MaxRetries; attempt++)
+        var evt = await db.Set<Event>()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(item => item.Id == request.EventId, cancellationToken)
+            ?? throw new NotFoundException("event.not_found", "Event was not found.");
+
+        if (!evt.IsPublished || !evt.TicketingEnabled)
         {
-            try
+            throw new NotFoundException("ticketing.disabled", "Ticketing is not enabled for this event.");
+        }
+
+        var typeIds = request.Items.Select(item => item.TicketTypeId).ToArray();
+        var types = await db.Set<TicketType>()
+            .Where(type => typeIds.Contains(type.Id))
+            .ToDictionaryAsync(type => type.Id, cancellationToken);
+
+        var now = DateTime.UtcNow;
+        var lineItems = new List<OrderItem>(request.Items.Count);
+        var pricingLines = new List<(decimal UnitPrice, int Quantity)>(request.Items.Count);
+
+        foreach (var selection in request.Items.OrderBy(item => item.TicketTypeId))
+        {
+            if (!types.TryGetValue(selection.TicketTypeId, out var type) || type.EventId != evt.Id)
             {
-                return await TryCreateAsync(request, cancellationToken);
+                throw new NotFoundException("ticket_type.not_found", "Ticket type was not found for this event.");
             }
-            catch (Exception exception) when (attempt < MaxRetries && db.IsSerializationConflict(exception))
+
+            if (!type.IsActive ||
+                (type.SalesStartAt is not null && type.SalesStartAt > now) ||
+                (type.SalesEndAt is not null && type.SalesEndAt <= now))
             {
-                logger.LogWarning(exception, "Serializable transaction conflict creating order, retry {Attempt}", attempt);
+                throw new ConflictException("order.not_on_sale", $"Ticket type '{type.Name}' is not on sale.");
+            }
+
+            if (selection.Quantity > type.MaxPerOrder)
+            {
+                throw new BadRequestException(
+                    "order.quantity_exceeded",
+                    $"A maximum of {type.MaxPerOrder} tickets of type '{type.Name}' can be ordered per purchase.");
+            }
+
+            pricingLines.Add((type.Price, selection.Quantity));
+            lineItems.Add(new OrderItem
+            {
+                TicketTypeId = type.Id,
+                Quantity = selection.Quantity,
+                UnitPrice = type.Price
+            });
+        }
+
+        var totalAmount = OrderPricing.ComputeTotal(pricingLines);
+
+        await using var transaction = await db.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+
+        foreach (var lineItem in lineItems)
+        {
+            if (!await ticketAvailability.TryReserveAsync(lineItem.TicketTypeId, lineItem.Quantity, cancellationToken))
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                throw new ConflictException(
+                    "order.capacity_exceeded",
+                    "The requested tickets are no longer available.");
             }
         }
 
-        throw new ConflictException("order.capacity_exceeded", "The requested tickets are no longer available.");
+        var order = new Order
+        {
+            OrderNumber = TicketCodeGenerator.GenerateOrderNumber(),
+            EventId = evt.Id,
+            BuyerFullName = request.BuyerFullName.Trim(),
+            BuyerEmail = request.BuyerEmail.Trim(),
+            BuyerPhone = request.BuyerPhone.Trim(),
+            Status = OrderStatus.PendingPayment,
+            TotalAmount = totalAmount,
+            Currency = "GHS",
+            HoldExpiresAt = now.AddMinutes(30)
+        };
+
+        foreach (var lineItem in lineItems)
+        {
+            lineItem.OrderId = order.Id;
+        }
+
+        db.Set<Order>().Add(order);
+        db.Set<OrderItem>().AddRange(lineItems);
+        await db.SaveChangesAsync(cancellationToken);
+
+        if (OrderPricing.IsFree(totalAmount))
+        {
+            order.Status = OrderStatus.Paid;
+            order.PaymentMethod = "free";
+            order.PaidAt = now;
+
+            db.Set<Ticket>().AddRange(OrderTicketIssuer.Issue(order, lineItems));
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+
+        IReadOnlyList<PublicTicketResponse>? tickets = null;
+
+        if (order.Status == OrderStatus.Paid)
+        {
+            tickets = await LoadTicketsAsync(order.Id, cancellationToken);
+        }
+        else
+        {
+            await StartCheckoutAsync(order, 1, cancellationToken);
+        }
+
+        return new OrderCreatedResponse(
+            order.OrderNumber,
+            order.OrderToken,
+            order.Status,
+            order.TotalAmount,
+            order.Currency,
+            await GetLatestCheckoutUrlAsync(order.Id, cancellationToken),
+            await LoadItemsAsync(order.Id, cancellationToken),
+            tickets);
     }
 
     public async Task<RetryPaymentResponse> RetryPaymentAsync(
@@ -97,141 +201,6 @@ public sealed class OrderService(
             tickets);
     }
 
-    public string BuildOrderPageUrl(string eventSlug, string orderNumber, Guid orderToken)
-    {
-        var frontendBaseUrl = configuration["Frontend:BaseUrl"] ?? string.Empty;
-        return $"{frontendBaseUrl.TrimEnd('/')}/events/{eventSlug}/order/{orderNumber}?token={orderToken}";
-    }
-
-    private async Task<OrderCreatedResponse> TryCreateAsync(
-        CreateOrderRequest request,
-        CancellationToken cancellationToken)
-    {
-        var evt = await db.Set<Event>()
-            .FirstOrDefaultAsync(item => item.Id == request.EventId, cancellationToken)
-            ?? throw new NotFoundException("event.not_found", "Event was not found.");
-
-        if (!evt.IsPublished || !evt.TicketingEnabled)
-        {
-            throw new NotFoundException("ticketing.disabled", "Ticketing is not enabled for this event.");
-        }
-
-        await using var transaction = await db.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
-
-        var typeIds = request.Items.Select(item => item.TicketTypeId).ToArray();
-        var types = await db.Set<TicketType>()
-            .Where(type => typeIds.Contains(type.Id))
-            .ToDictionaryAsync(type => type.Id, cancellationToken);
-
-        var now = DateTime.UtcNow;
-        var lineItems = new List<OrderItem>(request.Items.Count);
-        var pricingLines = new List<(decimal UnitPrice, int Quantity)>(request.Items.Count);
-
-        foreach (var selection in request.Items)
-        {
-            if (!types.TryGetValue(selection.TicketTypeId, out var type) || type.EventId != evt.Id)
-            {
-                throw new NotFoundException("ticket_type.not_found", "Ticket type was not found for this event.");
-            }
-
-            if (!type.IsActive ||
-                (type.SalesStartAt is not null && type.SalesStartAt > now) ||
-                (type.SalesEndAt is not null && type.SalesEndAt <= now))
-            {
-                throw new ConflictException("order.not_on_sale", $"Ticket type '{type.Name}' is not on sale.");
-            }
-
-            if (selection.Quantity > type.MaxPerOrder)
-            {
-                throw new BadRequestException(
-                    "order.quantity_exceeded",
-                    $"A maximum of {type.MaxPerOrder} tickets of type '{type.Name}' can be ordered per purchase.");
-            }
-
-            var available = await GetAvailableAsync(type, now, cancellationToken);
-            if (selection.Quantity > available)
-            {
-                throw new ConflictException("order.capacity_exceeded", $"Only {available} tickets of '{type.Name}' remain.");
-            }
-
-            pricingLines.Add((type.Price, selection.Quantity));
-            lineItems.Add(new OrderItem
-            {
-                OrderId = Guid.Empty,
-                TicketTypeId = type.Id,
-                Quantity = selection.Quantity,
-                UnitPrice = type.Price
-            });
-        }
-
-        var totalAmount = OrderPricing.ComputeTotal(pricingLines);
-
-        var order = new Order
-        {
-            OrderNumber = TicketCodeGenerator.GenerateOrderNumber(),
-            EventId = evt.Id,
-            BuyerFullName = request.BuyerFullName.Trim(),
-            BuyerEmail = request.BuyerEmail.Trim(),
-            BuyerPhone = request.BuyerPhone.Trim(),
-            Status = OrderStatus.PendingPayment,
-            TotalAmount = totalAmount,
-            Currency = "GHS",
-            HoldExpiresAt = now.AddMinutes(30)
-        };
-
-        foreach (var lineItem in lineItems)
-        {
-            lineItem.OrderId = order.Id;
-        }
-
-        db.Set<Order>().Add(order);
-        db.Set<OrderItem>().AddRange(lineItems);
-        await db.SaveChangesAsync(cancellationToken);
-
-        IReadOnlyList<PublicTicketResponse>? freeTickets = null;
-
-        if (OrderPricing.IsFree(totalAmount))
-        {
-            order.Status = OrderStatus.Paid;
-            order.PaymentMethod = "free";
-            order.PaidAt = now;
-
-            db.Set<Ticket>().AddRange(OrderTicketIssuer.Issue(order, lineItems));
-            await db.SaveChangesAsync(cancellationToken);
-
-            var items = await LoadItemsAsync(order.Id, cancellationToken);
-            freeTickets = await LoadTicketsAsync(order.Id, cancellationToken);
-
-            await transaction.CommitAsync(cancellationToken);
-
-            return new OrderCreatedResponse(
-                order.OrderNumber,
-                order.OrderToken,
-                order.Status,
-                order.TotalAmount,
-                order.Currency,
-                null,
-                items,
-                freeTickets);
-        }
-
-        await transaction.CommitAsync(cancellationToken);
-
-        await StartCheckoutAsync(order, 1, cancellationToken);
-
-        var checkoutItems = await LoadItemsAsync(order.Id, cancellationToken);
-
-        return new OrderCreatedResponse(
-            order.OrderNumber,
-            order.OrderToken,
-            order.Status,
-            order.TotalAmount,
-            order.Currency,
-            await GetLatestCheckoutUrlAsync(order.Id, cancellationToken),
-            checkoutItems,
-            null);
-    }
-
     private async Task StartCheckoutAsync(Order order, int attemptNumber, CancellationToken cancellationToken)
     {
         var evt = await db.Set<Event>()
@@ -240,7 +209,7 @@ public sealed class OrderService(
 
         var clientReference = TicketCodeGenerator.BuildClientReference(order.OrderNumber, attemptNumber);
         var callbackBaseUrl = hubtelOptions.Value.CallbackBaseUrl.TrimEnd('/');
-        var orderPageUrl = BuildOrderPageUrl(evt.Slug, order.OrderNumber, order.OrderToken);
+        var orderPageUrl = BuildOrderPageUrl(evt.Slug, order);
 
         var request = new CheckoutRequest(
             clientReference,
@@ -293,22 +262,10 @@ public sealed class OrderService(
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    private async Task<int> GetAvailableAsync(TicketType type, DateTime now, CancellationToken cancellationToken)
+    private string BuildOrderPageUrl(string eventSlug, Order order)
     {
-        var consumed = await db.Set<OrderItem>()
-            .Where(item => item.TicketTypeId == type.Id)
-            .Join(
-                db.Set<Order>().Where(order =>
-                    (order.Status == OrderStatus.AwaitingPayment
-                     || order.Status == OrderStatus.Paid
-                     || (order.Status == OrderStatus.PendingPayment && order.HoldExpiresAt > now))
-                    && order.EventId == type.EventId),
-                item => item.OrderId,
-                order => order.Id,
-                (item, order) => (int?)item.Quantity)
-            .SumAsync(quantity => quantity ?? 0, cancellationToken);
-
-        return type.Quantity - consumed;
+        var frontendBaseUrl = configuration["Frontend:BaseUrl"] ?? string.Empty;
+        return $"{frontendBaseUrl.TrimEnd('/')}/events/{eventSlug}/order/{order.OrderNumber}?token={order.OrderToken}";
     }
 
     private async Task<Order> FindByTokenAsync(string orderNumber, Guid orderToken, CancellationToken cancellationToken)

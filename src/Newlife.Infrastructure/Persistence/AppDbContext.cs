@@ -2,7 +2,6 @@ using System.Data;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
-using Npgsql;
 using Newlife.Domain.Entities;
 
 namespace Newlife.Infrastructure.Persistence;
@@ -22,21 +21,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options)
         IsolationLevel isolationLevel,
         CancellationToken cancellationToken = default)
         => Database.BeginTransactionAsync(isolationLevel, cancellationToken);
-
-    public bool IsSerializationConflict(Exception exception)
-    {
-        for (Exception? current = exception; current is not null; current = current.InnerException)
-        {
-            if (current is PostgresException postgresException &&
-                (postgresException.SqlState == PostgresErrorCodes.SerializationFailure ||
-                 postgresException.SqlState == PostgresErrorCodes.DeadlockDetected))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
