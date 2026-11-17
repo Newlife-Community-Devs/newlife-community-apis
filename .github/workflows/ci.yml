@@ -33,8 +33,6 @@ jobs:
           RENDER_SERVICE_ID: ${{ vars.RENDER_SERVICE_ID }}
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
-          echo "key length: ${#RENDER_API_KEY}"; echo "prefix: $(echo "$RENDER_API_KEY" | cut -c1-4)"
-          echo "GET services status: $(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $RENDER_API_KEY" "https://api.render.com/v1/services?limit=5")"
           if [ -z "$RENDER_SERVICE_ID" ]; then
             echo "RENDER_SERVICE_ID repository variable is not set"
             exit 1
