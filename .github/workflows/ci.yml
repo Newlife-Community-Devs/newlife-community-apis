@@ -22,3 +22,19 @@ jobs:
         run: dotnet test -c Release --no-build
       - name: Docker build
         run: docker build -t newlife-apis .
+
+  deploy:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy
+        run: |
+          response=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://api.render.com/v1/services/${{ vars.RENDER_SERVICE_ID }}/deploys" \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          code=$(echo "$response" | tail -1)
+          echo "Render deploy trigger status: $code"
+          test "$code" = "201" || test "$code" = "202"
