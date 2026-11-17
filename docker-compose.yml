@@ -24,6 +24,9 @@ services:
       ConnectionStrings__Default: "Host=db;Port=5432;Database=newlife;Username=newlife;Password=newlife_dev"
       Database__RunMigrationsOnStartup: "true"
       Hubtel__EnforceCallbackIp: "false"
+      Seed__AdminEmail: "admin@newlife.local"
+      Seed__AdminPassword: "AdminPass123"
+      Seed__DemoData: "true"
     depends_on:
       db:
         condition: service_healthy

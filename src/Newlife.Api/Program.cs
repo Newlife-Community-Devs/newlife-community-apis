@@ -23,6 +23,78 @@ using Serilog.Formatting.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// WebApplicationFactory hosts (integration tests) manage their own configuration;
+// never let a developer-local .env.local leak into them.
+var runningInIntegrationTests =
+    Environment.GetEnvironmentVariable("ASPNETCORE_TEST_CONTEXT") is not null ||
+    System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name == "testhost";
+
+if (!runningInIntegrationTests)
+{
+    LoadLocalDotEnv(builder);
+
+    // Neon (and most managed Postgres providers) hand out DATABASE_URL; prefer it over the
+    // appsettings default unless ConnectionStrings__Default is set explicitly (e.g. on Render).
+    if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ConnectionStrings__Default")))
+    {
+        var databaseUrl = builder.Configuration["DATABASE_URL"];
+        if (!string.IsNullOrWhiteSpace(databaseUrl))
+        {
+            builder.Configuration["ConnectionStrings:Default"] = databaseUrl;
+        }
+    }
+}
+
+var configuredConnectionString = builder.Configuration.GetConnectionString("Default");
+if (!string.IsNullOrWhiteSpace(configuredConnectionString))
+{
+    builder.Configuration["ConnectionStrings:Default"] =
+        Newlife.Infrastructure.Persistence.PostgresConnectionString.Normalize(configuredConnectionString);
+}
+
+static void LoadLocalDotEnv(WebApplicationBuilder builder)
+{
+    if (!builder.Environment.IsDevelopment())
+    {
+        return;
+    }
+
+    string? envFilePath = null;
+    var directory = new DirectoryInfo(builder.Environment.ContentRootPath);
+
+    for (var depth = 0; depth < 4 && directory is not null; depth++, directory = directory.Parent)
+    {
+        var candidate = Path.Combine(directory.FullName, ".env.local");
+
+        if (File.Exists(candidate))
+        {
+            envFilePath = candidate;
+            break;
+        }
+    }
+
+    if (envFilePath is null)
+    {
+        return;
+    }
+
+    var values = new Dictionary<string, string?>();
+
+    foreach (var line in File.ReadAllLines(envFilePath))
+    {
+        var separator = line.IndexOf('=');
+
+        if (separator <= 0 || line.TrimStart().StartsWith('#'))
+        {
+            continue;
+        }
+
+        values[line[..separator].Trim()] = line[(separator + 1)..].Trim().Trim('"');
+    }
+
+    builder.Configuration.AddInMemoryCollection(values);
+}
+
 if (builder.Environment.IsProduction())
 {
     var hubtelSection = builder.Configuration.GetSection("Hubtel");

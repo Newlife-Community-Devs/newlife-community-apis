@@ -78,6 +78,7 @@ is the full catalogue. Non-obvious ones:
 
 | Key | Notes |
 |---|---|
+| `DATABASE_URL` | Optional. URI form (`postgresql://…`) from Neon/managed hosts; used when `ConnectionStrings__Default` is unset. URIs are normalized to Npgsql key-value form at startup (Npgsql does not parse URIs itself). |
 | `JWT:SigningKey` | HS256, **≥ 64 characters** (validated at startup). |
 | `JWT:RefreshRotationGraceSeconds` | 60s grace for concurrent refresh rotations. |
 | `Hubtel:ApiId` / `Hubtel:ApiKey` | Workbench → API keys. Empty `ApiId` disables payments paths that need the gateway (reconciliation skips). |

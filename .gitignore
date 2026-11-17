@@ -41,3 +41,5 @@ logs/
 *.db
 *.db-shm
 *.db-wal
+.neon
+node_modules/
