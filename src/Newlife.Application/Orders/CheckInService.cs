@@ -39,7 +39,7 @@ public sealed class CheckInService(IAppDbContext db)
             return new CheckInResponse(CheckInResultType.AlreadyCheckedIn, responseTicket, ticket.CheckedInAt);
         }
 
-        var now = DateTime.UtcNow;
+        var now = TruncateToMicroseconds(DateTime.UtcNow);
         ticket.Status = TicketStatus.CheckedIn;
         ticket.CheckedInAt = now;
         ticket.CheckedInByUserId = userId;
@@ -65,4 +65,9 @@ public sealed class CheckInService(IAppDbContext db)
 
         return new CheckInStatsResponse(total, checkedIn, total - checkedIn);
     }
+
+    // PostgreSQL timestamptz stores microseconds; truncating before write keeps the
+    // value returned here identical to the value read back on re-scans.
+    private static DateTime TruncateToMicroseconds(DateTime value)
+        => new(value.Ticks - value.Ticks % 10, value.Kind);
 }
